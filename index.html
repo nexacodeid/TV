@@ -429,6 +429,16 @@
     display:none;
   }
   .channel-card.active-card .now-badge{ display:block; }
+  .card-logo .id-badge{
+    position:absolute; top:8px; left:8px;
+    background: var(--surface-elevated);
+    border: 1px solid var(--border-strong);
+    color: var(--text-secondary);
+    font-size:9px; font-weight:800;
+    letter-spacing:.04em;
+    padding: 3px 7px;
+    border-radius: 999px;
+  }
 
   .card-body{ padding: 12px 14px 14px; }
   .card-name{
@@ -578,7 +588,7 @@
       <div class="section-head">
         <div>
           <h2>Live Channels</h2>
-          <p>Browse available television channels.</p>
+          <p>Browse available television &amp; live sports channels.</p>
         </div>
         <button class="btn-refresh" id="refreshBtn" aria-label="Refresh channel list">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
@@ -607,7 +617,16 @@
 (function(){
   "use strict";
 
-  const API_URL = "https://tv.shajon.dev/playlist/channels.json";
+  const CHANNELS_URL = "https://tv.shajon.dev/playlist/channels.json";
+  const SPORTS_URL = "https://tv.shajon.dev/playlist/sports.json";
+
+  // Heuristics used only to prioritize sorting of real, API-fetched channels —
+  // no fake/hard-coded channels are ever added to the list.
+  const ID_KEYWORDS = [
+    "indonesia","indonesian","rcti","sctv","indosiar","transtv","trans7","trans 7",
+    "antv","mnctv","gtv","tvri","metro tv","metrotv","inews","tv one","tvone",
+    "kompas tv","kompastv","net.","net tv"
+  ];
 
   /* ---------------- STATE ---------------- */
   let allChannels = [];      // normalized channels
@@ -675,19 +694,31 @@
     return [];
   }
 
-  function normalizeChannel(raw, index){
+  function normalizeChannel(raw, index, source){
     if(!raw || typeof raw !== "object") raw = {};
     const name = raw.name || raw.title || raw.channel_name || "Unnamed Channel";
     const logo = raw.logo || raw.logo_url || raw.image || "";
     const url = raw.url || raw.stream_url || raw.stream || raw.play_url || raw.link || "";
-    const category = raw.category || raw.group || raw.group_title || "Uncategorized";
+    let category = raw.category || raw.group || raw.group_title || "";
+    category = String(category || "").trim();
+    if(!category) category = source === "sports" ? "Sports" : "Uncategorized";
+    const country = raw.country || raw.country_code || raw.tvg_country || raw.lang || raw.language || "";
     return {
-      id: "ch_" + index + "_" + name.replace(/[^a-z0-9]/gi,"").slice(0,20),
+      id: source + "_" + index + "_" + name.replace(/[^a-z0-9]/gi,"").slice(0,20),
       name: String(name).trim() || "Unnamed Channel",
       logo: String(logo || "").trim(),
       url: String(url || "").trim(),
-      category: String(category || "Uncategorized").trim() || "Uncategorized",
+      category: category,
+      country: String(country || "").trim(),
+      source: source,
     };
+  }
+
+  function isIndonesian(ch){
+    const country = (ch.country || "").toLowerCase();
+    if(country === "id" || country === "idn" || country.includes("indonesia")) return true;
+    const haystack = ((ch.category || "") + " " + (ch.name || "")).toLowerCase();
+    return ID_KEYWORDS.some(k => haystack.includes(k));
   }
 
   function buildCategories(list){
@@ -777,11 +808,13 @@
       const logoMarkup = ch.logo
         ? `<img src="${escapeHTML(ch.logo)}" alt="${escapeHTML(ch.name)} logo" loading="lazy" onerror="this.remove(); this.parentElement.querySelector('.fallback')?.classList.remove('sr-only');">`
         : "";
+      const idBadge = isIndonesian(ch) ? `<span class="id-badge">ID</span>` : "";
       return `
         <button class="channel-card ${isActive ? "active-card" : ""}" data-id="${escapeHTML(ch.id)}" aria-pressed="${isActive}">
           <div class="card-logo">
             ${logoMarkup}
             <span class="fallback ${ch.logo ? "sr-only" : ""}">${escapeHTML(initials(ch.name))}</span>
+            ${idBadge}
             <span class="now-badge">NOW PLAYING</span>
           </div>
           <div class="card-body">
@@ -910,28 +943,58 @@
   }
 
   /* ---------------- LOAD CHANNELS ---------------- */
+  function fetchPlaylist(url){
+    return fetch(url).then(res => {
+      if(!res.ok) throw new Error("Network response was not ok");
+      return res.json();
+    });
+  }
+
   function loadChannels(){
     showLoading();
 
-    fetch(API_URL)
-      .then(res => {
-        if(!res.ok) throw new Error("Network response was not ok");
-        return res.json();
-      })
-      .then(raw => {
-        const list = extractList(raw);
-        allChannels = list.map(normalizeChannel).filter(ch => ch.url);
+    Promise.allSettled([
+      fetchPlaylist(CHANNELS_URL),
+      fetchPlaylist(SPORTS_URL)
+    ]).then(results => {
+      const [channelsResult, sportsResult] = results;
+      const failedAll = results.every(r => r.status === "rejected");
 
-        const previousCategory = activeCategory;
-        categories = buildCategories(allChannels);
-        activeCategory = categories.includes(previousCategory) ? previousCategory : "All";
-
-        renderCategories();
-        filterChannels();
-      })
-      .catch(() => {
+      if(failedAll){
         showError();
-      });
+        return;
+      }
+
+      let combined = [];
+
+      if(channelsResult.status === "fulfilled"){
+        const list = extractList(channelsResult.value);
+        combined = combined.concat(
+          list.map((raw, i) => normalizeChannel(raw, i, "tv"))
+        );
+      }
+
+      if(sportsResult.status === "fulfilled"){
+        const list = extractList(sportsResult.value);
+        combined = combined.concat(
+          list.map((raw, i) => normalizeChannel(raw, i, "sports"))
+        );
+      }
+
+      combined = combined.filter(ch => ch.url);
+
+      // Prioritize Indonesian channels while keeping stable relative order otherwise.
+      combined.sort((a, b) => (isIndonesian(b) ? 1 : 0) - (isIndonesian(a) ? 1 : 0));
+
+      allChannels = combined;
+
+      const previousCategory = activeCategory;
+      categories = buildCategories(allChannels);
+      activeCategory = categories.includes(previousCategory) ? previousCategory : "All";
+
+      renderCategories();
+      filterChannels();
+    });
   }
 
   function refreshChannels(){
