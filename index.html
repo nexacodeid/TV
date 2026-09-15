@@ -342,6 +342,37 @@
   .btn-refresh.spinning svg{ animation: spin .7s linear infinite; }
   @keyframes spin{ to{ transform: rotate(360deg); } }
 
+  /* ---------------- FORMAT TABS ---------------- */
+  .format-tabs{
+    display:flex; gap:8px;
+    overflow-x:auto;
+    margin-bottom: 16px;
+    scrollbar-width: none;
+  }
+  .format-tabs::-webkit-scrollbar{ display:none; }
+  .format-tab{
+    flex-shrink:0;
+    display:flex; align-items:center; gap:7px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 10px 18px;
+    border-radius: 12px;
+    font-size: 14px; font-weight: 700;
+    cursor:pointer;
+    white-space:nowrap;
+    transition: all .18s ease;
+  }
+  .format-tab svg{ width:15px; height:15px; }
+  .format-tab:hover{ border-color: var(--border-strong); color: var(--text); }
+  .format-tab.active{
+    background: var(--surface-elevated);
+    border-color: rgba(255,23,68,.5);
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px rgba(255,23,68,.18);
+  }
+  .format-tab.active svg{ color: var(--accent); }
+
   /* ---------- CATEGORY FILTER ---------- */
   .category-row{
     display:flex; gap:8px;
@@ -596,6 +627,21 @@
         </button>
       </div>
 
+      <div class="format-tabs" id="formatTabs" role="tablist" aria-label="Format siaran">
+        <button class="format-tab active" data-tab="id" role="tab" aria-selected="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+          TV Indonesia
+        </button>
+        <button class="format-tab" data-tab="intl" role="tab" aria-selected="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          TV Luar Negeri
+        </button>
+        <button class="format-tab" data-tab="sport" role="tab" aria-selected="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 0 0 0 20M12 2a15.3 15.3 0 0 1 0 20M2 12h20M3.5 7.5h17M3.5 16.5h17"/></svg>
+          Sport
+        </button>
+      </div>
+
       <div class="category-row" id="categoryRow" role="tablist" aria-label="Channel categories"></div>
 
       <div class="channel-grid" id="channelGrid" aria-live="polite"></div>
@@ -632,6 +678,7 @@
   let allChannels = [];      // normalized channels
   let categories = ["All"];
   let activeCategory = "All";
+  let activeTab = "id";      // "id" | "intl" | "sport"
   let searchTerm = "";
   let activeChannelId = null;
   let hls = null;
@@ -640,6 +687,7 @@
   const el = {
     grid: document.getElementById("channelGrid"),
     categoryRow: document.getElementById("categoryRow"),
+    formatTabs: document.getElementById("formatTabs"),
     loadingText: document.getElementById("loadingText"),
     searchInput: document.getElementById("searchInput"),
     refreshBtn: document.getElementById("refreshBtn"),
@@ -721,6 +769,13 @@
     return ID_KEYWORDS.some(k => haystack.includes(k));
   }
 
+  function getTabList(tab){
+    if(tab === "id") return allChannels.filter(ch => ch.source === "tv" && isIndonesian(ch));
+    if(tab === "intl") return allChannels.filter(ch => ch.source === "tv" && !isIndonesian(ch));
+    if(tab === "sport") return allChannels.filter(ch => ch.source === "sports");
+    return allChannels;
+  }
+
   function buildCategories(list){
     const set = new Set();
     list.forEach(ch => { if(ch.category) set.add(ch.category); });
@@ -776,6 +831,9 @@
 
   /* ---------------- RENDER: CATEGORIES ---------------- */
   function renderCategories(){
+    categories = buildCategories(getTabList(activeTab));
+    if(!categories.includes(activeCategory)) activeCategory = "All";
+
     el.categoryRow.innerHTML = categories.map(cat => `
       <button class="category-pill ${cat === activeCategory ? "active" : ""}"
         data-category="${escapeHTML(cat)}"
@@ -792,6 +850,20 @@
         filterChannels();
       });
     });
+  }
+
+  function switchTab(tab){
+    activeTab = tab;
+    activeCategory = "All";
+
+    el.formatTabs.querySelectorAll(".format-tab").forEach(btn => {
+      const isActive = btn.getAttribute("data-tab") === tab;
+      btn.classList.toggle("active", isActive);
+      btn.setAttribute("aria-selected", isActive);
+    });
+
+    renderCategories();
+    filterChannels();
   }
 
   /* ---------------- RENDER: CHANNELS ---------------- */
@@ -834,7 +906,7 @@
 
   /* ---------------- FILTER ---------------- */
   function filterChannels(){
-    let list = allChannels;
+    let list = getTabList(activeTab);
 
     if(activeCategory !== "All"){
       list = list.filter(ch => ch.category === activeCategory);
@@ -988,12 +1060,14 @@
 
       allChannels = combined;
 
-      const previousCategory = activeCategory;
-      categories = buildCategories(allChannels);
-      activeCategory = categories.includes(previousCategory) ? previousCategory : "All";
-
-      renderCategories();
-      filterChannels();
+      if(!getTabList(activeTab).length){
+        const fallbackTab = ["id","sport","intl"].find(t => getTabList(t).length > 0);
+        if(fallbackTab) switchTab(fallbackTab);
+        else { renderCategories(); filterChannels(); }
+      } else {
+        renderCategories();
+        filterChannels();
+      }
     });
   }
 
@@ -1004,6 +1078,10 @@
   }
 
   /* ---------------- EVENTS ---------------- */
+  el.formatTabs.querySelectorAll(".format-tab").forEach(btn => {
+    btn.addEventListener("click", () => switchTab(btn.getAttribute("data-tab")));
+  });
+
   el.searchInput.addEventListener("input", debounce((e) => {
     searchTerm = e.target.value;
     filterChannels();
